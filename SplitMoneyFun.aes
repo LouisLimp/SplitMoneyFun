@@ -1,0 +1,174 @@
+@compiler >= 6
+
+include "String.aes"
+
+payable contract SplitMoneyFun =
+
+    record state =
+        { index         : int,
+          expenses: map(string, expense), 
+          my_expenses: map(address,list(string)),
+          mutal_expenses: map(mutual_expense_key,mutal_expense)
+        } 
+    
+    record expense = {
+        id: string,
+        creator: address,
+        name: string,
+        img: string,
+        description: string,
+        total: int, // bill's value
+        receive: int, // how much it has been received from sharers 
+        date: string,
+        status: bool }
+    
+    record mutal_expense = {
+        paid: bool,
+        amount: int, 
+        expense_id: string, 
+        creator: address,
+        sharer: address }
+
+    record mutual_expense_key = {
+        expense_id: string, 
+        creator: address,
+        sharer: address }
+    stateful entrypoint init() = 
+        {   expenses = {},
+            my_expenses = {},
+            mutal_expenses = {},
+            index = 1 
+            }
+
+    // only sharer should call this function
+    payable stateful entrypoint pay_expense(id: string, creator: address) : bool = 
+        require(expense_exist(id), "There is no expense with this id")
+        let expense = state.expenses[id]
+        require(expense.status, "This expense's status is INACTIVE. Please check again")
+        // get mutual expense between Caller and the bill's creator
+        let sharer_mutual_expense_key : mutual_expense_key = {
+            expense_id = id,
+            creator = creator,
+            sharer = Call.caller }
+        require( (Map.member(sharer_mutual_expense_key, state.mutal_expenses)) , "Can't find the mutual expense between you can the creator. Please check the input")
+        let sharer_mutual_expense = state.mutal_expenses[sharer_mutual_expense_key]
+        require( sharer_mutual_expense.sharer == Call.caller, "Only sharer can call this function")
+        require( sharer_mutual_expense.paid == false , "You already paid for this expense")
+        
+        // sharer send owned-amount to creator. Comment this to turn off
+        // require(Call.value >= sharer_mutual_expense.amount, "You don't have enough AE to pay for this expense")
+        // Chain.spend(expense.creator, sharer_mutual_expense.amount)
+        
+        let updated_mutual_expense = {
+            paid = true,
+            amount = sharer_mutual_expense.amount, 
+            expense_id = id, 
+            creator = expense.creator,
+            sharer = sharer_mutual_expense.sharer }
+        
+        // update mutual expenses
+        put(state{ mutal_expenses[sharer_mutual_expense_key] = updated_mutual_expense})
+
+        // check if the bill creator receive enough amount or not
+        let new_receive = expense.receive + sharer_mutual_expense.amount
+        if (new_receive == expense.total) 
+            let updated_expense = {
+                id = expense.id,
+                creator = Call.caller,
+                name = expense.name,
+                img = expense.img,
+                description = expense.description,
+                total = expense.total,
+                receive = expense.receive + sharer_mutual_expense.amount,
+                date = expense.date,
+                status = false } // bill completed
+            put(state{ expenses[id] = updated_expense})
+        else 
+            let updated_expense = {
+                id = expense.id,
+                creator = Call.caller,
+                name = expense.name,
+                img = expense.img,
+                description = expense.description,
+                total = expense.total,
+                receive = expense.total + sharer_mutual_expense.amount,
+                date = expense.date,
+                status = expense.status }
+            put(state{ expenses[id] = updated_expense})
+        true
+
+
+
+    public stateful entrypoint create_expense(id: string, name: string, description: string, img: string, date: string, total: int) : expense =
+        let new_expense = {
+            id = id,
+            creator = Call.caller,
+            name = name,
+            img = img,
+            description = description,
+            total = total,
+            receive = 0,
+            date = date,
+            status = true  }
+        put(state{ expenses[id] = new_expense})
+
+        // create expense for the first time
+        if (Map.lookup(Call.caller,state.my_expenses) == None)
+            put(state{my_expenses[Call.caller] = [id] })
+        else 
+            let current_expenses = state.my_expenses[Call.caller]
+            let new_expense_list = List.insert_at(List.length(current_expenses) - 1,id,current_expenses)
+            put(state{my_expenses[Call.caller] = new_expense_list })        
+
+        new_expense
+
+    public stateful entrypoint add_mutual_expense(expense_id: string, sharer: address, owned_amount: int) : mutal_expense = 
+        require(( Map.lookup(expense_id,state.expenses) != None) , "Expense is not exist")
+        let expense = state.expenses[expense_id]
+        
+        require((  expense.creator == Call.caller ) , "You are not allowed to add sharer for this expense")
+        require((  expense.creator != sharer ) , "You can't add yourself as sharer :D")
+        require((  expense.total >= owned_amount ) , "The share amount must be less than the bill total")
+        require((  expense.total >= expense.receive + owned_amount ) , "Sum of owned amount and expense receive is more than the expense's amount")
+        // only expense's creator can create this
+        let new_mutual_expense_key = {
+            expense_id = expense_id,
+            creator = Call.caller,
+            sharer = sharer }
+        let new_mutal_expense = { 
+            paid = false,
+            amount = owned_amount, 
+            expense_id = expense_id, 
+            creator = Call.caller,
+            sharer = sharer }
+        put(state { mutal_expenses[new_mutual_expense_key] = new_mutal_expense })
+        // add expense to my_expense list for the sharer
+        if (Map.lookup(sharer,state.my_expenses) == None)
+            put(state{my_expenses[sharer] = [expense_id] })
+        else 
+            let current_expenses = state.my_expenses[sharer]
+            let new_expense_list = List.insert_at(List.length(current_expenses) - 1, expense_id ,current_expenses)
+            put(state{my_expenses[sharer] = new_expense_list })       
+        new_mutal_expense
+    
+    entrypoint get_mutual_expense(expense_id: string, creator: address, sharer: address) : mutal_expense =
+        let current_mutual_expense_key = {
+            expense_id = expense_id,
+            creator = creator,
+            sharer = sharer }
+        let return_mututal_expense : mutal_expense = state.mutal_expenses[current_mutual_expense_key]
+        return_mututal_expense
+
+    entrypoint get_expense(id: string) : expense =
+        require(expense_exist(id), "There is no expense with this id")
+        let return_expense : expense = state.expenses[id]
+        return_expense
+    
+    entrypoint get_my_expense(user: address) : list(string) =  
+        if (Map.lookup(user,state.my_expenses) == None)
+            []
+        else 
+            state.my_expenses[user]
+
+    entrypoint expense_exist(id: string) : bool =
+        Map.member(id, state.expenses)
