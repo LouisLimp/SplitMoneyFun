@@ -55,9 +55,9 @@ payable contract SplitMoneyFun =
         require( sharer_mutual_expense.sharer == Call.caller, "Only sharer can call this function")
         require( sharer_mutual_expense.paid == false , "You already paid for this expense")
         
-        // sharer send owned-amount to creator. Comment this to turn off
-        // require(Call.value >= sharer_mutual_expense.amount, "You don't have enough AE to pay for this expense")
-        // Chain.spend(expense.creator, sharer_mutual_expense.amount)
+        
+        require(Call.value >= sharer_mutual_expense.amount, "You don't have enough AE to pay for this expense")
+        Chain.spend(expense.creator, sharer_mutual_expense.amount)
         
         let updated_mutual_expense = {
             paid = true,
